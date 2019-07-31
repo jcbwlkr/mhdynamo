@@ -5,13 +5,8 @@ package mhdynamo
 // TODO(jlw) get rid of so much nesting
 
 import (
-	"errors"
 	"fmt"
 	"log" // TODO(jlw) do not use the global logger.
-	"math"
-	"math/rand"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -51,50 +46,6 @@ func NewStorage(client *dynamodb.DynamoDB, table string, consistent bool, ttl in
 		ttl:        ttl,
 		now:        time.Now,
 	}
-}
-
-// idForMsg knows how to generate a string that encodes the dynamo ID for
-// a message. They ID has two parts: the ID of the message and the created
-// date. It is stored with the created date first as a unix timestamp in
-// nanoseconds because that representation is a fixed width and it's sortable.
-func idForMsg(m *data.Message) string {
-	var sb strings.Builder
-	sb.Grow(20 + len(m.ID)) // preallocate enough space. 19 for the timesamp, 1 for the |, plus the id
-	sb.WriteString(strconv.Itoa(int(m.Created.UnixNano())))
-	sb.WriteRune('|')
-	sb.WriteString(string(m.ID))
-	return sb.String()
-}
-
-// dayForID decodes the partition key (DayKey) from a storage ID. It will
-// be a string in YYYY-MM-DD format.
-func dayForID(id string) (string, error) {
-	if len(id) < 21 {
-		return "", errors.New("id is too short")
-	}
-
-	nano, err := strconv.Atoi(id[:19])
-	if err != nil {
-		return "", err
-	}
-	created := time.Unix(0, int64(nano))
-
-	return created.UTC().Format("2006-01-02"), nil
-}
-
-// daysForTTL gives the range of days that should be used as partition
-// keys for querying items inside the TTL range.
-func daysForTTL(ttl int, now time.Time) []string {
-	days := make([]string, ttl)
-
-	now = now.UTC()
-
-	for i := 0; i < ttl; i++ {
-		days[i] = now.Format("2006-01-02")
-		now = now.AddDate(0, 0, -1)
-	}
-
-	return days
 }
 
 // Store stores a message in DynamoDB and returns its storage ID.
@@ -385,35 +336,4 @@ func (d *Storage) Load(id string) (*data.Message, error) {
 	}
 
 	return m.Msg, nil
-}
-
-// These set the lower and upper bounds for the delay between attempts to retry
-// an API operation.
-const (
-	minBackoffInterval = 10 * time.Millisecond
-	maxBackoffInterval = 20 * time.Second
-)
-
-// retryInterval gives an exponentially increasing interval between attempts.
-// It includes some random variance and is bounded to only return values
-// between minBackoffInterval and maxBackoffInterval.
-func retryInterval(attempt int) time.Duration {
-	// 2^n results in 2, 4, 8, 16, 32 ms etc.
-	n := int(math.Pow(2, float64(attempt)))
-
-	// Add 1 to 20 ms for variance. Reduces chance of multiple instances calling
-	// in synchronized waves.
-	// TODO(jlw) does it matter that rand isn't seeded?
-	n += rand.Intn(20) + 1
-
-	// Convert to milliseconds.
-	delay := time.Duration(n) * time.Millisecond
-
-	// Enforce lower and upper bounds.
-	if delay < minBackoffInterval {
-		delay = minBackoffInterval
-	} else if delay > maxBackoffInterval {
-		delay = maxBackoffInterval
-	}
-	return delay
 }
