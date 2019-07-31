@@ -115,6 +115,11 @@ func (d *Storage) Load(id string) (*data.Message, error) {
 		return nil, err
 	}
 
+	// NOTE: Before we return the message we have to change their messages from
+	// their normal format to the dynamo format. This is a smell but the front
+	// end used the value of msg.ID to make subsequent GET and DELETE requests.
+	m.Msg.ID = data.MessageID(idForMsg(m.Msg))
+
 	return m.Msg, nil
 }
 
@@ -328,10 +333,20 @@ func (d *Storage) List(start int, limit int) (*data.Messages, error) {
 		}
 	}
 
+	// NOTE: Before we return the list we have to change their IDs from their
+	// normal format to our dynamo format. This is a smell but the front end used
+	// the value of msg.ID to make subsequent GET and DELETE requests.
+	for i := range s {
+		s[i].ID = data.MessageID(idForMsg(&s[i]))
+	}
+
 	return &s, nil
 }
 
 // Search finds messages matching the query.
 func (d *Storage) Search(kind, query string, start, limit int) (*data.Messages, int, error) {
-	return nil, 0, errors.New("search is not yet implemented for DynamoDB")
+	// NOTE: I would normally return nil here for the messages but the
+	// MailHog-API package ignores this error and tries to dereference the
+	// pointer anyway.
+	return new(data.Messages), 0, errors.New("search is not yet implemented for DynamoDB")
 }
