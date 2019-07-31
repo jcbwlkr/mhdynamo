@@ -76,7 +76,7 @@ func (d *Storage) Store(m *data.Message) (string, error) {
 	}
 
 	// Convert the mailhog message to a dynamodb map.
-	// TODO(jlw) This uses reflection and interfaces so it may be expensive. If
+	// NOTE: This uses reflection and interfaces so it may be expensive. If
 	// profiling shows a problem we can do the mapping ourselves but it's
 	// complicated in creating each attribute with a type manually.
 	item, err := dynamodbattribute.MarshalMap(msg)
@@ -267,8 +267,8 @@ func (d *Storage) Count() int {
 		return true
 	})
 
-	// NOTE: Existing implementations ignore the error on the Count step. This is
-	// generally a bad idea. If we can't count the db should we panic? Log it?
+	// NOTE: The interface and existing implementations ignore the error on the
+	// Count step. This is a bad idea. If we can't count should we panic? Log it?
 	if err != nil {
 		log.Printf("could not count table: %v", err)
 		return 0
@@ -281,9 +281,41 @@ func (d *Storage) Count() int {
 // messages first). The list will include at most limit values and will begin
 // at the message indexed by start.
 func (d *Storage) List(start int, limit int) (*data.Messages, error) {
-	// TODO(jlw) document this
+	// NOTE: The data scheme we use allows for consistent sort orders and
+	// improved performance with Query which can ask for one partition at a time
+	// rather than Scan which always read the whole table. Unfortunately the
+	// mailhog interface only gives use a starting index but Dynamo does not
+	// support an OFFSET parameter. The only Dynamo way to start querying at an
+	// offset is to ALREADY know the ID of the item at that offset.
+	//
+	// I have chosen a seeking implementation which is my best-effort approach to
+	// implement List according to the given interface and within the limitations
+	// of Dynamo. Starting with the current day partition we ask for up to LIMIT
+	// messages. As results come in we keep count of messages we have seen and
+	// ignore them until we hit the START value.
+	//
+	// The biggest drawback of this approach is that the API does a lot of "busy
+	// work" the larger the offset gets. Running List for the first several pages
+	// of messages should be fast enough but the deeper into the message history
+	// you go the longer each List will take.
+	//
+	// It may be possible to improve performance of this seeking algorithm
+	// by running Query with ProjectionExpression to only retrieve IDs rather
+	// than entire messages when hunting for that starting ID.
+	//
+	// Another alternative is to do a COUNT for each day until we pass the
+	// starting point then seek for the starting point within that partition.
+	// These COUNTs could be cached in a metadata partition especially for days
+	// that have already past since presumably no messages from the past will
+	// come in once a day is over.
 
-	// TODO(jlw) do some ProjectionExpression queries for just ids to find the starting id? Maybe do a COUNT for each day until we pass the starting point.
+	// NOTE: A more complicated alternative involves using different partitions
+	// for tracking metadata such as a large array of IDs that are sorted in
+	// insertion order. This would require a fair amount of complexity to keep in
+	// sync especially considering TTL. Furthermore the benefits of this approach
+	// might not pan out in practice without some profiling and real production
+	// data to consider.
+
 	s := make(data.Messages, 0, limit)
 
 	var skipped int
@@ -306,10 +338,9 @@ func (d *Storage) List(start int, limit int) (*data.Messages, error) {
 				":day": &dynamodb.AttributeValue{S: aws.String(day)},
 			},
 			ScanIndexForward: aws.Bool(false),
-			// TODO(jlw) This doesn't account for the offset? Any way we can avoid the whole skip thing?
 		}
 
-		// Querying a table may require multiple calls. The sdk handles this for us
+		// Querying a table may require multiple calls. The SDK handles this for us
 		// by calling this function once per page.
 		fn := func(page *dynamodb.QueryOutput, hasNext bool) bool {
 			for _, item := range page.Items {
