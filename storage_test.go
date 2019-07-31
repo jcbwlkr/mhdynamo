@@ -183,15 +183,15 @@ func setup(t *testing.T, table string) (d *Storage, teardown func()) {
 	db.Config = *db.Config.WithLogLevel(aws.LogDebugWithHTTPBody)
 	//db.AddDebugHandlers() // Turn this on to see a ton of AWS output.
 
-	// Start creating a table for these tests. It should have Day set as the
-	// Partition Key ("HASH") and ID as the Sort Key ("RANGE")
+	// Start creating a table for these tests. It should have CreatedDate set as
+	// the Partition Key ("HASH") and ID as the Sort Key ("RANGE")
 	_, err = db.CreateTable(&dynamodb.CreateTableInput{
 		TableName: aws.String(table),
 
 		// Define which attributes make up the primary key.
 		KeySchema: []*dynamodb.KeySchemaElement{
 			&dynamodb.KeySchemaElement{
-				AttributeName: aws.String("DayKey"),
+				AttributeName: aws.String("CreatedDate"),
 				KeyType:       aws.String("HASH"),
 			},
 			&dynamodb.KeySchemaElement{
@@ -200,10 +200,10 @@ func setup(t *testing.T, table string) (d *Storage, teardown func()) {
 			},
 		},
 
-		// Define data type for attributes: Day and ID are strings.
+		// Define data type for attributes: CreatedDate and ID are strings.
 		AttributeDefinitions: []*dynamodb.AttributeDefinition{
 			&dynamodb.AttributeDefinition{
-				AttributeName: aws.String("DayKey"),
+				AttributeName: aws.String("CreatedDate"),
 				AttributeType: aws.String("S"),
 			},
 			&dynamodb.AttributeDefinition{

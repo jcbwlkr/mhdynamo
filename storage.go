@@ -18,10 +18,10 @@ import (
 
 // message is the structure we store in DynamoDB.
 type message struct {
-	DayKey  string
-	ID      string
-	Expires int64
-	Msg     *data.Message
+	CreatedDate string
+	ID          string
+	Expires     int64
+	Msg         *data.Message
 }
 
 // Storage is a DynamoDB powered storage backend for MailHog.
@@ -58,10 +58,10 @@ func NewStorage(client *dynamodb.DynamoDB, table string, consistent bool, ttl in
 // Store stores a message in DynamoDB and returns its storage ID.
 func (d *Storage) Store(m *data.Message) (string, error) {
 	msg := message{
-		DayKey:  m.Created.UTC().Format(keyFormat),
-		ID:      idForMsg(m),
-		Expires: m.Created.AddDate(0, 0, d.ttl).Unix(),
-		Msg:     m,
+		CreatedDate: m.Created.UTC().Format(keyFormat),
+		ID:          idForMsg(m),
+		Expires:     m.Created.AddDate(0, 0, d.ttl).Unix(),
+		Msg:         m,
 	}
 
 	// Convert the mailhog message to a dynamodb map.
@@ -95,8 +95,8 @@ func (d *Storage) Load(id string) (*data.Message, error) {
 	input := &dynamodb.GetItemInput{
 		TableName: aws.String(d.table),
 		Key: map[string]*dynamodb.AttributeValue{
-			"DayKey": &dynamodb.AttributeValue{S: aws.String(day)},
-			"ID":     &dynamodb.AttributeValue{S: aws.String(id)},
+			"CreatedDate": &dynamodb.AttributeValue{S: aws.String(day)},
+			"ID":          &dynamodb.AttributeValue{S: aws.String(id)},
 		},
 		ConsistentRead: aws.Bool(d.consistent),
 	}
@@ -128,8 +128,8 @@ func (d *Storage) DeleteOne(id string) error {
 	input := &dynamodb.DeleteItemInput{
 		TableName: aws.String(d.table),
 		Key: map[string]*dynamodb.AttributeValue{
-			"DayKey": &dynamodb.AttributeValue{S: aws.String(day)},
-			"ID":     &dynamodb.AttributeValue{S: aws.String(id)},
+			"CreatedDate": &dynamodb.AttributeValue{S: aws.String(day)},
+			"ID":          &dynamodb.AttributeValue{S: aws.String(id)},
 		},
 	}
 
@@ -143,7 +143,7 @@ func (d *Storage) DeleteOne(id string) error {
 // DeleteAll deletes all messages stored in DynamoDB.
 func (d *Storage) DeleteAll() error {
 	// We know all of the partition keys that should have values because they
-	// have DayKeys in the range of our TTL. Loop over those days and get the IDs
+	// have CreatedDates in the range of our TTL. Loop over those days and get the IDs
 	// for that partition. Then batch delete those IDs.
 	//
 	// A more efficient option may be to delete the table and recreate it but we
@@ -157,7 +157,7 @@ func (d *Storage) DeleteAll() error {
 		input := &dynamodb.QueryInput{
 			TableName:              aws.String(d.table),
 			ConsistentRead:         aws.Bool(d.consistent),
-			KeyConditionExpression: aws.String("DayKey = :day"),
+			KeyConditionExpression: aws.String("CreatedDate = :day"),
 			ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
 				":day": &dynamodb.AttributeValue{S: aws.String(day)},
 			},
@@ -202,8 +202,8 @@ func (d *Storage) DeleteAll() error {
 					DeleteRequest: &dynamodb.DeleteRequest{
 						// TODO(jlw) clean up all of this key stuff
 						Key: map[string]*dynamodb.AttributeValue{
-							"DayKey": &dynamodb.AttributeValue{S: aws.String(day)},
-							"ID":     &dynamodb.AttributeValue{S: aws.String(id)},
+							"CreatedDate": &dynamodb.AttributeValue{S: aws.String(day)},
+							"ID":          &dynamodb.AttributeValue{S: aws.String(id)},
 						},
 					},
 				}
@@ -234,11 +234,10 @@ func (d *Storage) DeleteAll() error {
 
 // Count returns the number of stored messages.
 func (d *Storage) Count() int {
-	// TODO(jlw) for large tables Scan (especially frequent scans) can be very
-	// slow and use up all of your provisioned capacity. Consider alternatives
-	// here. We could have a special partition with a single item that just
-	// stores the count. Problems with that are synchronization and accounting
-	// for TTL.
+	// NOTE: for large tables Scan (especially frequent scans) can be very slow
+	// and use up all of your provisioned capacity. Consider alternatives here.
+	// We could have a special partition with a single item that just stores the
+	// count. Problems with that are synchronization and accounting for TTL.
 
 	input := &dynamodb.ScanInput{
 		TableName:      aws.String(d.table),
@@ -252,11 +251,9 @@ func (d *Storage) Count() int {
 		return true
 	})
 
-	// TODO(jlw) Existing implementations ignore the error on the Count step. This is
+	// NOTE: Existing implementations ignore the error on the Count step. This is
 	// generally a bad idea. If we can't count the db should we panic? Log it?
-	// This depends on how this method is used throughout the rest of MailHog.
 	if err != nil {
-		// TODO(jlw) try again with exponential backoff
 		log.Printf("could not count table: %v", err)
 		return 0
 	}
@@ -288,7 +285,7 @@ func (d *Storage) List(start int, limit int) (*data.Messages, error) {
 			TableName:              aws.String(d.table),
 			ConsistentRead:         aws.Bool(d.consistent),
 			Limit:                  aws.Int64(int64(limit - len(s))),
-			KeyConditionExpression: aws.String("DayKey = :day"),
+			KeyConditionExpression: aws.String("CreatedDate = :day"),
 			ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
 				":day": &dynamodb.AttributeValue{S: aws.String(day)},
 			},
@@ -318,15 +315,8 @@ func (d *Storage) List(start int, limit int) (*data.Messages, error) {
 				s = append(s, *m.Msg)
 			}
 
-			// If there are more pages we might not need to get back a full page worth
-			// of items. Lower the limit to just what we need. If our remaining limit
-			// is still more than a page no harm is done. If the remaining needs is
-			// less than a page then we'll only transmit what we need.
-			// TODO(jlw) I would like to do not ask for more than I need but modifying the Limit after pagination has started seems to be ignored.
-			if hasNext {
-				input.Limit = aws.Int64(int64(limit - len(s)))
-			}
-
+			// NOTE: I would like to not ask for more than I need on subsequent pages
+			// but modifying the Limit after pagination has started is ignored.
 			return true
 		}
 
