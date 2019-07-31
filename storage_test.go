@@ -235,7 +235,10 @@ func setup(t *testing.T, table string) (d *Storage, teardown func()) {
 	}
 
 	// Create a DynamoDB storage with consistent reads enabled.
-	d = NewStorage(db, table, true, 7)
+	d, err = NewStorage(db, table, true, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Define teardown func to be called later for cleanup.
 	teardown = func() {

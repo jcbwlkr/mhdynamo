@@ -1,12 +1,12 @@
 package mhdynamo
 
-// TODO(jlw) Make all of this safe for concurrent use.
 // TODO(jlw) get rid of so much nesting
 
 import (
 	"errors"
 	"fmt"
-	"log" // TODO(jlw) do not use the global logger.
+	"log" // NOTE: do not use the global logger.
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -23,7 +23,8 @@ type message struct {
 	Msg         *data.Message
 }
 
-// Storage is a DynamoDB powered storage backend for MailHog.
+// Storage is a DynamoDB powered storage backend for MailHog. It is safe for
+// concurrent use.
 type Storage struct {
 	client     *dynamodb.DynamoDB
 	table      string
@@ -42,8 +43,19 @@ type Storage struct {
 // DynamoDB is intended to be used in Eventual Consistency mode.
 //
 // Set ttl to a number of days that messages should be kept.
-func NewStorage(client *dynamodb.DynamoDB, table string, consistent bool, ttl int) *Storage {
-	// TODO(jlw) ensure ttl is positive
+func NewStorage(client *dynamodb.DynamoDB, table string, consistent bool, ttl int) (*Storage, error) {
+	if client == nil {
+		return nil, errors.New("client may not be nil")
+	}
+
+	table = strings.TrimSpace(table)
+	if table == "" {
+		return nil, errors.New("table may not be blank")
+	}
+
+	if ttl <= 0 {
+		return nil, errors.New("ttl must be positive")
+	}
 
 	return &Storage{
 		client:     client,
@@ -51,7 +63,7 @@ func NewStorage(client *dynamodb.DynamoDB, table string, consistent bool, ttl in
 		consistent: consistent,
 		ttl:        ttl,
 		now:        time.Now,
-	}
+	}, nil
 }
 
 // Store stores a message in DynamoDB and returns its storage ID.
