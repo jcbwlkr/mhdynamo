@@ -6,11 +6,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/mailhog/data"
 )
 
 // keyFormat defines how message creation times are formatted to day partition keys.
 const keyFormat = "2006-01-02"
+
+func key(day, id string) map[string]*dynamodb.AttributeValue {
+	return map[string]*dynamodb.AttributeValue{
+		"CreatedDate": &dynamodb.AttributeValue{S: aws.String(day)},
+		"ID":          &dynamodb.AttributeValue{S: aws.String(id)},
+	}
+}
 
 // idForMsg knows how to generate a string that encodes the dynamo ID for a
 // message. The ID has two parts: the ID of the message and the created date.

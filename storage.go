@@ -104,11 +104,8 @@ func (d *Storage) Load(id string) (*data.Message, error) {
 	}
 
 	input := &dynamodb.GetItemInput{
-		TableName: aws.String(d.table),
-		Key: map[string]*dynamodb.AttributeValue{
-			"CreatedDate": &dynamodb.AttributeValue{S: aws.String(day)},
-			"ID":          &dynamodb.AttributeValue{S: aws.String(id)},
-		},
+		TableName:      aws.String(d.table),
+		Key:            key(day, id),
 		ConsistentRead: aws.Bool(d.consistent),
 	}
 
@@ -143,10 +140,7 @@ func (d *Storage) DeleteOne(id string) error {
 
 	input := &dynamodb.DeleteItemInput{
 		TableName: aws.String(d.table),
-		Key: map[string]*dynamodb.AttributeValue{
-			"CreatedDate": &dynamodb.AttributeValue{S: aws.String(day)},
-			"ID":          &dynamodb.AttributeValue{S: aws.String(id)},
-		},
+		Key:       key(day, id),
 	}
 
 	if _, err := d.client.DeleteItem(input); err != nil {
@@ -216,11 +210,7 @@ func (d *Storage) DeleteAll() error {
 			for i, id := range ids[:end] {
 				batch[i] = &dynamodb.WriteRequest{
 					DeleteRequest: &dynamodb.DeleteRequest{
-						// TODO(jlw) clean up all of this key stuff
-						Key: map[string]*dynamodb.AttributeValue{
-							"CreatedDate": &dynamodb.AttributeValue{S: aws.String(day)},
-							"ID":          &dynamodb.AttributeValue{S: aws.String(id)},
-						},
+						Key: key(day, id),
 					},
 				}
 			}
