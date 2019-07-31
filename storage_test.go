@@ -115,11 +115,12 @@ func List(t *testing.T) {
 	// a range of dates to exercise different partition keys.
 	original := makeListMessages(t, 0, 40)
 	for i := range original {
-		if _, err := s.Store(&original[i]); err != nil {
+		id, err := s.Store(&original[i])
+		if err != nil {
 			t.Fatal(err)
 		}
+		original[i].ID = data.MessageID(id)
 	}
-	return
 
 	// Let's say we're running these queries at noon on 2008-08-14.
 	s.now = func() time.Time { return time.Date(2008, time.August, 14, 12, 0, 0, 0, time.UTC) }
@@ -139,7 +140,12 @@ func List(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	want := makeListMessages(t, 10, 10)
+	for i := range want {
+		want[i].ID = data.MessageID(idForMsg(&want[i]))
+	}
+
 	if diff := cmp.Diff(&want, got); diff != "" {
 		t.Errorf("Got %d items, want %d", len(*got), len(want))
 		t.Errorf("Listing only 10 did not match expected:\n%s", diff)
