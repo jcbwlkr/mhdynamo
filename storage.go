@@ -5,6 +5,7 @@ package mhdynamo
 // TODO(jlw) get rid of so much nesting
 
 import (
+	"errors"
 	"fmt"
 	"log" // TODO(jlw) do not use the global logger.
 	"time"
@@ -23,7 +24,7 @@ type message struct {
 	Msg     *data.Message
 }
 
-// Storage represents a DynamoDB powered storage backend for MailHog.
+// Storage is a DynamoDB powered storage backend for MailHog.
 type Storage struct {
 	client     *dynamodb.DynamoDB
 	table      string
@@ -32,10 +33,16 @@ type Storage struct {
 	now        func() time.Time // Use time.Now in production and a mock for tests.
 }
 
-// NewStorage creates a DynamoDB powered storage backend. Set consistent to
-// true to enforce strongly consistent reads. By default DynamoDB is intended
-// to be used in Eventual Consistency mode. Set ttl to a number of days that
-// messages should be kept.
+// NewStorage creates a DynamoDB powered storage backend that implements the
+// mailhog Storage interface.
+//
+// The table must already be created with the keys and attributes defined in
+// the README.
+//
+// Set consistent to true to enforce strongly consistent reads. By default
+// DynamoDB is intended to be used in Eventual Consistency mode.
+//
+// Set ttl to a number of days that messages should be kept.
 func NewStorage(client *dynamodb.DynamoDB, table string, consistent bool, ttl int) *Storage {
 	// TODO(jlw) ensure ttl is positive
 
@@ -51,7 +58,7 @@ func NewStorage(client *dynamodb.DynamoDB, table string, consistent bool, ttl in
 // Store stores a message in DynamoDB and returns its storage ID.
 func (d *Storage) Store(m *data.Message) (string, error) {
 	msg := message{
-		DayKey:  m.Created.UTC().Format("2006-01-02"),
+		DayKey:  m.Created.UTC().Format(keyFormat),
 		ID:      idForMsg(m),
 		Expires: m.Created.AddDate(0, 0, d.ttl).Unix(),
 		Msg:     m,
@@ -78,117 +85,37 @@ func (d *Storage) Store(m *data.Message) (string, error) {
 	return msg.ID, nil
 }
 
-// Count returns the number of stored messages.
-func (d *Storage) Count() int {
+// Load loads an individual message by storage ID
+func (d *Storage) Load(id string) (*data.Message, error) {
+	day, err := dayForID(id)
+	if err != nil {
+		return nil, err
+	}
 
-	input := &dynamodb.ScanInput{
-		TableName:      aws.String(d.table),
-		Select:         aws.String("COUNT"),
+	input := &dynamodb.GetItemInput{
+		TableName: aws.String(d.table),
+		Key: map[string]*dynamodb.AttributeValue{
+			"DayKey": &dynamodb.AttributeValue{S: aws.String(day)},
+			"ID":     &dynamodb.AttributeValue{S: aws.String(id)},
+		},
 		ConsistentRead: aws.Bool(d.consistent),
 	}
 
-	scan, err := d.client.Scan(input)
-
-	// TODO(jlw) try again with exponential backoff
-
-	// TODO(jlw) for large tables Scan (especially frequent scans) can be very
-	// slow and use up all of your provisioned capacity. Consider alternatives
-	// here. For example we could have a second table that just maintains a
-	// count then ensure it is updated with just a sindle count record. Problems
-	// with that are synchronization and accounting for TTL.
-
-	// TODO(jlw) Existing implementations ignore the error on the Count step. This is
-	// generally a bad idea. If we can't count the db should we panic? Log it?
-	// This depends on how this method is used throughout the rest of MailHog.
+	output, err := d.client.GetItem(input)
 	if err != nil {
-		log.Printf("could not count table: %v", err)
-		return 0
+		return nil, err // TODO(jlw) Implement backoff and retry
 	}
 
-	return int(*scan.Count)
-}
-
-// Search finds messages matching the query
-func (d *Storage) Search(kind, query string, start, limit int) (*data.Messages, int, error) {
-	panic("not implemented")
-}
-
-// List returns a list of messages sorted by date created descending (newest
-// messages first). The list will include at most limit values and will begin
-// at the message indexed by start.
-func (d *Storage) List(start int, limit int) (*data.Messages, error) {
-
-	// TODO(jlw) document this
-
-	// TODO(jlw) do some ProjectionExpression queries for just ids to find the starting id? Maybe do a COUNT for each day until we pass the starting point.
-	s := make(data.Messages, 0, limit)
-
-	var skipped int
-	var pageErr error
-
-	// Call this in a loop once per day in the range
-	for _, day := range daysForTTL(d.ttl, d.now()) {
-
-		// Stop querying if we've hit our limit.
-		if len(s) >= limit {
-			break
-		}
-
-		input := &dynamodb.QueryInput{
-			TableName:              aws.String(d.table),
-			ConsistentRead:         aws.Bool(d.consistent),
-			Limit:                  aws.Int64(int64(limit - len(s))),
-			KeyConditionExpression: aws.String("DayKey = :day"),
-			ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
-				":day": &dynamodb.AttributeValue{S: aws.String(day)},
-			},
-			ScanIndexForward: aws.Bool(false),
-			// TODO(jlw) This doesn't account for the offset? Any way we can avoid the whole skip thing?
-		}
-
-		// Querying a table may require multiple calls. The sdk handles this for us
-		// by calling this function once per page.
-		fn := func(page *dynamodb.QueryOutput, hasNext bool) bool {
-			for _, item := range page.Items {
-				if skipped < start {
-					skipped++
-					continue
-				}
-
-				// Stop paginating if we've hit our limit.
-				if len(s) == limit {
-					return false
-				}
-
-				var m message
-				if err := dynamodbattribute.UnmarshalMap(item, &m); err != nil {
-					err = pageErr
-					return false
-				}
-				s = append(s, *m.Msg)
-			}
-
-			// If there are more pages we might not need to get back a full page worth
-			// of items. Lower the limit to just what we need. If our remaining limit
-			// is still more than a page no harm is done. If the remaining needs is
-			// less than a page then we'll only transmit what we need.
-			// TODO(jlw) I would like to do not ask for more than I need but modifying the Limit after pagination has started seems to be ignored.
-			if hasNext {
-				input.Limit = aws.Int64(int64(limit - len(s)))
-			}
-
-			return true
-		}
-
-		if err := d.client.QueryPages(input, fn); err != nil {
-			return nil, err // TODO(jlw) retry
-		}
-		if pageErr != nil {
-			return nil, pageErr // TODO(jlw) retry
-		}
+	if output.Item == nil {
+		return nil, fmt.Errorf("dynamodb: message %q not found", id) // TODO(jlw) pkg/errors?
 	}
 
-	return &s, nil
+	var m message
+	if err := dynamodbattribute.UnmarshalMap(output.Item, &m); err != nil {
+		return nil, err
+	}
+
+	return m.Msg, nil
 }
 
 // DeleteOne deletes an individual message by storage ID
@@ -305,35 +232,116 @@ func (d *Storage) DeleteAll() error {
 	return nil
 }
 
-// Load loads an individual message by storage ID
-func (d *Storage) Load(id string) (*data.Message, error) {
-	day, err := dayForID(id)
-	if err != nil {
-		return nil, err
-	}
+// Count returns the number of stored messages.
+func (d *Storage) Count() int {
+	// TODO(jlw) for large tables Scan (especially frequent scans) can be very
+	// slow and use up all of your provisioned capacity. Consider alternatives
+	// here. We could have a special partition with a single item that just
+	// stores the count. Problems with that are synchronization and accounting
+	// for TTL.
 
-	input := &dynamodb.GetItemInput{
-		TableName: aws.String(d.table),
-		Key: map[string]*dynamodb.AttributeValue{
-			"DayKey": &dynamodb.AttributeValue{S: aws.String(day)},
-			"ID":     &dynamodb.AttributeValue{S: aws.String(id)},
-		},
+	input := &dynamodb.ScanInput{
+		TableName:      aws.String(d.table),
+		Select:         aws.String("COUNT"),
 		ConsistentRead: aws.Bool(d.consistent),
 	}
 
-	output, err := d.client.GetItem(input)
+	var count int64
+	err := d.client.ScanPages(input, func(scan *dynamodb.ScanOutput, hasNext bool) bool {
+		count += *scan.Count
+		return true
+	})
+
+	// TODO(jlw) Existing implementations ignore the error on the Count step. This is
+	// generally a bad idea. If we can't count the db should we panic? Log it?
+	// This depends on how this method is used throughout the rest of MailHog.
 	if err != nil {
-		return nil, err // TODO(jlw) Implement backoff and retry
+		// TODO(jlw) try again with exponential backoff
+		log.Printf("could not count table: %v", err)
+		return 0
 	}
 
-	if output.Item == nil {
-		return nil, fmt.Errorf("dynamodb: message %q not found", id) // TODO(jlw) pkg/errors?
+	return int(count)
+}
+
+// List returns a list of messages sorted by date created descending (newest
+// messages first). The list will include at most limit values and will begin
+// at the message indexed by start.
+func (d *Storage) List(start int, limit int) (*data.Messages, error) {
+	// TODO(jlw) document this
+
+	// TODO(jlw) do some ProjectionExpression queries for just ids to find the starting id? Maybe do a COUNT for each day until we pass the starting point.
+	s := make(data.Messages, 0, limit)
+
+	var skipped int
+	var pageErr error
+
+	// Call this in a loop once per day in the range
+	for _, day := range daysForTTL(d.ttl, d.now()) {
+
+		// Stop querying if we've hit our limit.
+		if len(s) >= limit {
+			break
+		}
+
+		input := &dynamodb.QueryInput{
+			TableName:              aws.String(d.table),
+			ConsistentRead:         aws.Bool(d.consistent),
+			Limit:                  aws.Int64(int64(limit - len(s))),
+			KeyConditionExpression: aws.String("DayKey = :day"),
+			ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+				":day": &dynamodb.AttributeValue{S: aws.String(day)},
+			},
+			ScanIndexForward: aws.Bool(false),
+			// TODO(jlw) This doesn't account for the offset? Any way we can avoid the whole skip thing?
+		}
+
+		// Querying a table may require multiple calls. The sdk handles this for us
+		// by calling this function once per page.
+		fn := func(page *dynamodb.QueryOutput, hasNext bool) bool {
+			for _, item := range page.Items {
+				if skipped < start {
+					skipped++
+					continue
+				}
+
+				// Stop paginating if we've hit our limit.
+				if len(s) == limit {
+					return false
+				}
+
+				var m message
+				if err := dynamodbattribute.UnmarshalMap(item, &m); err != nil {
+					err = pageErr
+					return false
+				}
+				s = append(s, *m.Msg)
+			}
+
+			// If there are more pages we might not need to get back a full page worth
+			// of items. Lower the limit to just what we need. If our remaining limit
+			// is still more than a page no harm is done. If the remaining needs is
+			// less than a page then we'll only transmit what we need.
+			// TODO(jlw) I would like to do not ask for more than I need but modifying the Limit after pagination has started seems to be ignored.
+			if hasNext {
+				input.Limit = aws.Int64(int64(limit - len(s)))
+			}
+
+			return true
+		}
+
+		if err := d.client.QueryPages(input, fn); err != nil {
+			return nil, err // TODO(jlw) retry
+		}
+		if pageErr != nil {
+			return nil, pageErr // TODO(jlw) retry
+		}
 	}
 
-	var m message
-	if err := dynamodbattribute.UnmarshalMap(output.Item, &m); err != nil {
-		return nil, err
-	}
+	return &s, nil
+}
 
-	return m.Msg, nil
+// Search finds messages matching the query.
+func (d *Storage) Search(kind, query string, start, limit int) (*data.Messages, int, error) {
+	return nil, 0, errors.New("search is not yet implemented for DynamoDB")
 }
