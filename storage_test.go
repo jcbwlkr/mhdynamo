@@ -28,10 +28,10 @@ func TestStorage(t *testing.T) {
 func CRUD(t *testing.T) {
 	t.Parallel()
 
-	d, teardown := setup(t, "CRUD")
+	s, teardown := setup(t, "CRUD")
 	defer teardown()
 
-	if count := d.Count(); count != 0 {
+	if count := s.Count(); count != 0 {
 		t.Errorf("At start the table has %d items, expected 0", count)
 	}
 
@@ -42,17 +42,17 @@ func CRUD(t *testing.T) {
 		To:      []*data.Path{data.PathFromString("anna@example.com")},
 	}
 
-	id, err := d.Store(msg)
+	id, err := s.Store(msg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	msg.ID = data.MessageID(id)
 
-	if count := d.Count(); count != 1 {
+	if count := s.Count(); count != 1 {
 		t.Errorf("After storing one item the table has %d items, expected 1", count)
 	}
 
-	stored, err := d.Load(id)
+	stored, err := s.Load(id)
 	if err != nil {
 		t.Errorf("Unable to load item by id %q: %v", id, err)
 	}
@@ -61,11 +61,11 @@ func CRUD(t *testing.T) {
 		t.Errorf("Stored message different from expected:\n%s", diff)
 	}
 
-	if err := d.DeleteOne(id); err != nil {
+	if err := s.DeleteOne(id); err != nil {
 		t.Errorf("Unable to delete item by id %q: %v", id, err)
 	}
 
-	if stored, err := d.Load(id); err == nil {
+	if stored, err := s.Load(id); err == nil {
 		t.Errorf("Should get error when loading deleted item %q", id)
 		t.Errorf("Was able to load this: %+v", stored)
 	}
@@ -75,7 +75,7 @@ func CRUD(t *testing.T) {
 func DeleteAll(t *testing.T) {
 	t.Parallel()
 
-	d, teardown := setup(t, "DeleteAll")
+	s, teardown := setup(t, "DeleteAll")
 	defer teardown()
 
 	for i := 0; i < 3; i++ {
@@ -85,20 +85,20 @@ func DeleteAll(t *testing.T) {
 			From:    data.PathFromString("jacob@example.com"),
 			To:      []*data.Path{data.PathFromString("anna@example.com")},
 		}
-		if _, err := d.Store(msg); err != nil {
+		if _, err := s.Store(msg); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	if count := d.Count(); count != 3 {
+	if count := s.Count(); count != 3 {
 		t.Errorf("After storing items the table has %d items, expected 3", count)
 	}
 
-	if err := d.DeleteAll(); err != nil {
+	if err := s.DeleteAll(); err != nil {
 		t.Errorf("Unable to delete all: %v", err)
 	}
 
-	if count := d.Count(); count != 0 {
+	if count := s.Count(); count != 0 {
 		t.Errorf("After calling DeleteAll the table has %d items, expected 0", count)
 	}
 }
@@ -107,7 +107,7 @@ func DeleteAll(t *testing.T) {
 func List(t *testing.T) {
 	t.Parallel()
 
-	d, teardown := setup(t, "List")
+	s, teardown := setup(t, "List")
 	defer teardown()
 
 	// Insert 40 messages with specially crafted creation dates so we can assert
@@ -115,17 +115,17 @@ func List(t *testing.T) {
 	// a range of dates to exercise different partition keys.
 	original := makeListMessages(t, 0, 40)
 	for i := range original {
-		if _, err := d.Store(&original[i]); err != nil {
+		if _, err := s.Store(&original[i]); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return
 
 	// Let's say we're running these queries at noon on 2008-08-14.
-	d.now = func() time.Time { return time.Date(2008, time.August, 14, 12, 0, 0, 0, time.UTC) }
+	s.now = func() time.Time { return time.Date(2008, time.August, 14, 12, 0, 0, 0, time.UTC) }
 
 	// First check we can get them all back in the right order.
-	got, err := d.List(0, 40)
+	got, err := s.List(0, 40)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func List(t *testing.T) {
 	}
 
 	// Next get just messages 10 through 19 (start 10, limit 10).
-	got, err = d.List(10, 10)
+	got, err = s.List(10, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func makeListMessages(t *testing.T, start, size int) data.Messages {
 	return msgs
 }
 
-func setup(t *testing.T, table string) (d *Storage, teardown func()) {
+func setup(t *testing.T, table string) (s *Storage, teardown func()) {
 	t.Helper()
 
 	table = "test" + table + strconv.Itoa(int(time.Now().Unix()))
@@ -236,7 +236,7 @@ func setup(t *testing.T, table string) (d *Storage, teardown func()) {
 	}
 
 	// Create a DynamoDB storage with consistent reads enabled.
-	d, err = NewStorage(db, table, true, 7)
+	s, err = NewStorage(db, table, true, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func setup(t *testing.T, table string) (d *Storage, teardown func()) {
 		}
 	}
 
-	return d, teardown
+	return s, teardown
 }
 
 func mustMessageID(t *testing.T) data.MessageID {

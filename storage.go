@@ -67,11 +67,11 @@ func NewStorage(client *dynamodb.DynamoDB, table string, consistent bool, ttl in
 }
 
 // Store stores a message in DynamoDB and returns its storage ID.
-func (d *Storage) Store(m *data.Message) (string, error) {
+func (s *Storage) Store(m *data.Message) (string, error) {
 	msg := message{
 		CreatedDate: m.Created.UTC().Format(keyFormat),
 		ID:          idForMsg(m),
-		Expires:     m.Created.AddDate(0, 0, d.ttl).Unix(),
+		Expires:     m.Created.AddDate(0, 0, s.ttl).Unix(),
 		Msg:         m,
 	}
 
@@ -85,31 +85,31 @@ func (d *Storage) Store(m *data.Message) (string, error) {
 	}
 
 	input := &dynamodb.PutItemInput{
-		TableName: aws.String(d.table),
+		TableName: aws.String(s.table),
 		Item:      item,
 	}
 
-	if _, err = d.client.PutItem(input); err != nil {
+	if _, err = s.client.PutItem(input); err != nil {
 		return "", errors.Wrap(err, "calling PutItem")
 	}
 
 	return msg.ID, nil
 }
 
-// Load loads an individual message by storage ID
-func (d *Storage) Load(id string) (*data.Message, error) {
+// Load loads an individual message by storage ID.
+func (s *Storage) Load(id string) (*data.Message, error) {
 	day, err := dayForID(id)
 	if err != nil {
 		return nil, errors.Wrap(err, "decoding partition from id")
 	}
 
 	input := &dynamodb.GetItemInput{
-		TableName:      aws.String(d.table),
+		TableName:      aws.String(s.table),
 		Key:            key(day, id),
-		ConsistentRead: aws.Bool(d.consistent),
+		ConsistentRead: aws.Bool(s.consistent),
 	}
 
-	output, err := d.client.GetItem(input)
+	output, err := s.client.GetItem(input)
 	if err != nil {
 		return nil, errors.Wrap(err, "calling GetItem")
 	}
@@ -125,25 +125,25 @@ func (d *Storage) Load(id string) (*data.Message, error) {
 
 	// NOTE: Before we return the message we have to change their messages from
 	// their normal format to the dynamo format. This is a smell but the front
-	// end used the value of msg.ID to make subsequent GET and DELETE requests.
+	// end uses the value of msg.ID to make subsequent GET and DELETE requests.
 	m.Msg.ID = data.MessageID(idForMsg(m.Msg))
 
 	return m.Msg, nil
 }
 
-// DeleteOne deletes an individual message by storage ID
-func (d *Storage) DeleteOne(id string) error {
+// DeleteOne deletes an individual message by storage ID.
+func (s *Storage) DeleteOne(id string) error {
 	day, err := dayForID(id)
 	if err != nil {
 		return errors.Wrap(err, "decoding partition from id")
 	}
 
 	input := &dynamodb.DeleteItemInput{
-		TableName: aws.String(d.table),
+		TableName: aws.String(s.table),
 		Key:       key(day, id),
 	}
 
-	if _, err := d.client.DeleteItem(input); err != nil {
+	if _, err := s.client.DeleteItem(input); err != nil {
 		return errors.Wrap(err, "calling DeleteItem")
 	}
 
@@ -151,7 +151,7 @@ func (d *Storage) DeleteOne(id string) error {
 }
 
 // DeleteAll deletes all messages stored in DynamoDB.
-func (d *Storage) DeleteAll() error {
+func (s *Storage) DeleteAll() error {
 	// We know all of the partition keys that should have values because they
 	// have CreatedDates in the range of our TTL. Loop over those days and get the IDs
 	// for that partition. Then batch delete those IDs.
@@ -159,14 +159,14 @@ func (d *Storage) DeleteAll() error {
 	// A more efficient option may be to delete the table and recreate it but we
 	// can't assume to have those permissions.
 
-	// TODO(jlw) do this concurrently
+	// TODO(jlw) The order we delete these does not matter so we can do it concurrently.
 
 	// Call this in a loop once per day in the range
-	for _, day := range daysForTTL(d.ttl, d.now()) {
+	for _, day := range daysForTTL(s.ttl, s.now()) {
 
 		input := &dynamodb.QueryInput{
-			TableName:              aws.String(d.table),
-			ConsistentRead:         aws.Bool(d.consistent),
+			TableName:              aws.String(s.table),
+			ConsistentRead:         aws.Bool(s.consistent),
 			KeyConditionExpression: aws.String("CreatedDate = :day"),
 			ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
 				":day": &dynamodb.AttributeValue{S: aws.String(day)},
@@ -191,7 +191,7 @@ func (d *Storage) DeleteAll() error {
 			return true
 		}
 
-		if err := d.client.QueryPages(input, fn); err != nil {
+		if err := s.client.QueryPages(input, fn); err != nil {
 			return errors.Wrap(err, "calling QueryPages")
 		}
 		if pageErr != nil {
@@ -218,7 +218,7 @@ func (d *Storage) DeleteAll() error {
 
 			input := &dynamodb.BatchWriteItemInput{
 				RequestItems: map[string][]*dynamodb.WriteRequest{
-					d.table: batch,
+					s.table: batch,
 				},
 			}
 
@@ -232,7 +232,7 @@ func (d *Storage) DeleteAll() error {
 					return errors.New("took more than 25 tries to delete a batch")
 				}
 
-				output, err := d.client.BatchWriteItem(input)
+				output, err := s.client.BatchWriteItem(input)
 				if err != nil {
 					return errors.Wrap(err, "calling BatchWriteItem")
 				}
@@ -245,20 +245,20 @@ func (d *Storage) DeleteAll() error {
 }
 
 // Count returns the number of stored messages.
-func (d *Storage) Count() int {
+func (s *Storage) Count() int {
 	// NOTE: for large tables Scan (especially frequent scans) can be very slow
 	// and use up all of your provisioned capacity. Consider alternatives here.
 	// We could have a special partition with a single item that just stores the
 	// count. Problems with that are synchronization and accounting for TTL.
 
 	input := &dynamodb.ScanInput{
-		TableName:      aws.String(d.table),
+		TableName:      aws.String(s.table),
 		Select:         aws.String("COUNT"),
-		ConsistentRead: aws.Bool(d.consistent),
+		ConsistentRead: aws.Bool(s.consistent),
 	}
 
 	var count int64
-	err := d.client.ScanPages(input, func(scan *dynamodb.ScanOutput, hasNext bool) bool {
+	err := s.client.ScanPages(input, func(scan *dynamodb.ScanOutput, hasNext bool) bool {
 		count += *scan.Count
 		return true
 	})
@@ -276,7 +276,7 @@ func (d *Storage) Count() int {
 // List returns a list of messages sorted by date created descending (newest
 // messages first). The list will include at most limit values and will begin
 // at the message indexed by start.
-func (d *Storage) List(start int, limit int) (*data.Messages, error) {
+func (s *Storage) List(start int, limit int) (*data.Messages, error) {
 	// NOTE: The data scheme we use allows for consistent sort orders and
 	// improved performance with Query which can ask for one partition at a time
 	// rather than Scan which always read the whole table. Unfortunately the
@@ -312,23 +312,25 @@ func (d *Storage) List(start int, limit int) (*data.Messages, error) {
 	// might not pan out in practice without some profiling and real production
 	// data to consider.
 
-	s := make(data.Messages, 0, limit)
+	// NOTE:
+
+	list := make(data.Messages, 0, limit)
 
 	var skipped int
 	var pageErr error
 
 	// Call this in a loop once per day in the range
-	for _, day := range daysForTTL(d.ttl, d.now()) {
+	for _, day := range daysForTTL(s.ttl, s.now()) {
 
 		// Stop querying if we've hit our limit.
-		if len(s) >= limit {
+		if len(list) >= limit {
 			break
 		}
 
 		input := &dynamodb.QueryInput{
-			TableName:              aws.String(d.table),
-			ConsistentRead:         aws.Bool(d.consistent),
-			Limit:                  aws.Int64(int64(limit - len(s))),
+			TableName:              aws.String(s.table),
+			ConsistentRead:         aws.Bool(s.consistent),
+			Limit:                  aws.Int64(int64(limit - len(list))),
 			KeyConditionExpression: aws.String("CreatedDate = :day"),
 			ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
 				":day": &dynamodb.AttributeValue{S: aws.String(day)},
@@ -346,7 +348,7 @@ func (d *Storage) List(start int, limit int) (*data.Messages, error) {
 				}
 
 				// Stop paginating if we've hit our limit.
-				if len(s) == limit {
+				if len(list) == limit {
 					return false
 				}
 
@@ -355,7 +357,7 @@ func (d *Storage) List(start int, limit int) (*data.Messages, error) {
 					pageErr = errors.Wrap(err, "unmarshalling item")
 					return false
 				}
-				s = append(s, *m.Msg)
+				list = append(list, *m.Msg)
 			}
 
 			// NOTE: I would like to not ask for more than I need on subsequent pages
@@ -363,7 +365,7 @@ func (d *Storage) List(start int, limit int) (*data.Messages, error) {
 			return true
 		}
 
-		if err := d.client.QueryPages(input, fn); err != nil {
+		if err := s.client.QueryPages(input, fn); err != nil {
 			return nil, errors.Wrap(err, "calling QueryPages")
 		}
 		if pageErr != nil {
@@ -372,17 +374,17 @@ func (d *Storage) List(start int, limit int) (*data.Messages, error) {
 	}
 
 	// NOTE: Before we return the list we have to change their IDs from their
-	// normal format to our dynamo format. This is a smell but the front end used
+	// normal format to our dynamo format. This is a smell but the front end uses
 	// the value of msg.ID to make subsequent GET and DELETE requests.
-	for i := range s {
-		s[i].ID = data.MessageID(idForMsg(&s[i]))
+	for i := range list {
+		list[i].ID = data.MessageID(idForMsg(&list[i]))
 	}
 
-	return &s, nil
+	return &list, nil
 }
 
 // Search finds messages matching the query.
-func (d *Storage) Search(kind, query string, start, limit int) (*data.Messages, int, error) {
+func (s *Storage) Search(kind, query string, start, limit int) (*data.Messages, int, error) {
 	// NOTE: I would normally return nil here for the messages but the
 	// MailHog-API package ignores this error and tries to dereference the
 	// pointer anyway.

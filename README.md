@@ -7,7 +7,7 @@ is **experimental** and currently incomplete as it does not implement the
 ## Schema
 
 DynamoDB is a NoSQL managed database service provided by AWS. Although it is
-NoSQL you must define a minimum schema to control how data is partitioned,
+NoSQL, you must define a minimum schema to control how data is partitioned,
 sorted, and expired through TTL settings. This package takes an opinionated
 view of how those settings must be configured.
 
@@ -32,7 +32,7 @@ would degrade performance.
 A different approach was taken that uses the created date (but not time) of
 each message for partitioning. This allows for predictable partition keys while
 still having some level of partition distribution. This is consistent with the
-[AWS Recommendations For Time-Series Data](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-time-series.html)
+[AWS Recommendations For Time-Series Data](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-time-series.html).
 
 It is still possible for partitions to be uneven if there is a spike in mail on
 a particular day. If more granularity is desired this can be reasonably
@@ -64,7 +64,7 @@ partitioning scheme and sorting scheme defined above, just knowing
 `random@host` is not sufficient to identify a record. Instead the creation time
 (in nanoseconds) is combined with the ID to generate a new ID that is sortable
 and can be decoded to find the appropriate partition key. This means an ID like
-`"1564364816345567660|msg1@localhost"` originally has the id `msg1@localhost`
+`"1564364816345567660|msg1@localhost"` originally had the id `msg1@localhost`
 and was created at 1564364816345567660 so it is in the `"2019-07-29"` partition.
 
 ## Improvements and Limitations

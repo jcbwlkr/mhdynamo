@@ -14,6 +14,8 @@ import (
 // keyFormat defines how message creation times are formatted to day partition keys.
 const keyFormat = "2006-01-02"
 
+// key is a helper for building the type map that dynamo wants to represent a
+// primary key.
 func key(day, id string) map[string]*dynamodb.AttributeValue {
 	return map[string]*dynamodb.AttributeValue{
 		"CreatedDate": &dynamodb.AttributeValue{S: aws.String(day)},
@@ -38,6 +40,8 @@ func idForMsg(m *data.Message) string {
 // dayForID decodes the partition key (DayKey) from a storage ID. It will
 // be a string in YYYY-MM-DD format.
 func dayForID(id string) (string, error) {
+	// Ensure id is long enough. It should have 19 bytes for the timestamp, 1 for
+	// the separator, and at least 1 for the id.
 	if len(id) < 21 {
 		return "", errors.New("id is too short")
 	}
