@@ -1,7 +1,6 @@
 package mhdynamo
 
 // TODO(jlw) Make all of this safe for concurrent use.
-// TODO(jlw) Sprinkle some context on this.
 // TODO(jlw) get rid of so much nesting
 
 import (

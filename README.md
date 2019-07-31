@@ -66,3 +66,10 @@ partitioning scheme and sorting scheme defined above, just knowing
 and can be decoded to find the appropriate partition key. This means an ID like
 `"1564364816345567660|msg1@localhost"` originally has the id `msg1@localhost`
 and was created at 1564364816345567660 so it is in the `"2019-07-29"` partition.
+
+## Improvements and Limitations
+
+This backend must implement the mailhog Storage interface which does not
+provide `context.Context` for timeouts or cancellation which I would like. If
+MailHog were extended to provide those field then this package could be
+modified to respect those deadlines.
