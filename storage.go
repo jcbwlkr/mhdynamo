@@ -1,10 +1,9 @@
 package mhdynamo
 
 // TODO(jlw) get rid of so much nesting
+// TODO(jlw) Implement backoff and retry
 
 import (
-	"errors"
-	"fmt"
 	"log" // NOTE: do not use the global logger.
 	"strings"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
 	"github.com/mailhog/data"
+	"github.com/pkg/errors"
 )
 
 // message is the structure we store in DynamoDB.
@@ -81,7 +81,7 @@ func (d *Storage) Store(m *data.Message) (string, error) {
 	// complicated in creating each attribute with a type manually.
 	item, err := dynamodbattribute.MarshalMap(msg)
 	if err != nil {
-		return "", err // TODO(jlw) use pkg/errors?
+		return "", errors.Wrap(err, "marshalling message")
 	}
 
 	input := &dynamodb.PutItemInput{
@@ -90,7 +90,7 @@ func (d *Storage) Store(m *data.Message) (string, error) {
 	}
 
 	if _, err = d.client.PutItem(input); err != nil {
-		return "", err // TODO(jlw) on error try again with exponential backoff until a time limit
+		return "", errors.Wrap(err, "calling PutItem")
 	}
 
 	return msg.ID, nil
@@ -100,7 +100,7 @@ func (d *Storage) Store(m *data.Message) (string, error) {
 func (d *Storage) Load(id string) (*data.Message, error) {
 	day, err := dayForID(id)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "decoding partition from id")
 	}
 
 	input := &dynamodb.GetItemInput{
@@ -111,16 +111,16 @@ func (d *Storage) Load(id string) (*data.Message, error) {
 
 	output, err := d.client.GetItem(input)
 	if err != nil {
-		return nil, err // TODO(jlw) Implement backoff and retry
+		return nil, errors.Wrap(err, "calling GetItem")
 	}
 
 	if output.Item == nil {
-		return nil, fmt.Errorf("dynamodb: message %q not found", id) // TODO(jlw) pkg/errors?
+		return nil, errors.Errorf("dynamodb: message %q not found", id)
 	}
 
 	var m message
 	if err := dynamodbattribute.UnmarshalMap(output.Item, &m); err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "unmarshalling message")
 	}
 
 	// NOTE: Before we return the message we have to change their messages from
@@ -135,7 +135,7 @@ func (d *Storage) Load(id string) (*data.Message, error) {
 func (d *Storage) DeleteOne(id string) error {
 	day, err := dayForID(id)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "decoding partition from id")
 	}
 
 	input := &dynamodb.DeleteItemInput{
@@ -144,7 +144,7 @@ func (d *Storage) DeleteOne(id string) error {
 	}
 
 	if _, err := d.client.DeleteItem(input); err != nil {
-		return err // TODO(jlw) Implement backoff and retry
+		return errors.Wrap(err, "calling DeleteItem")
 	}
 
 	return nil
@@ -183,7 +183,7 @@ func (d *Storage) DeleteAll() error {
 			for _, item := range page.Items {
 				var m message
 				if err := dynamodbattribute.UnmarshalMap(item, &m); err != nil {
-					err = pageErr
+					pageErr = errors.Wrap(err, "unmarshalling message")
 					return false
 				}
 				ids = append(ids, m.ID)
@@ -192,10 +192,10 @@ func (d *Storage) DeleteAll() error {
 		}
 
 		if err := d.client.QueryPages(input, fn); err != nil {
-			return err // TODO(jlw) retry
+			return errors.Wrap(err, "calling QueryPages")
 		}
 		if pageErr != nil {
-			return pageErr // TODO(jlw) retry
+			return pageErr
 		}
 
 		// Now that we have the IDs for a particular day we can batch delete them.
@@ -222,13 +222,19 @@ func (d *Storage) DeleteAll() error {
 				},
 			}
 
-			// Start deleting. If any UnprocessedItems come back then try again.
-			for len(input.RequestItems) > 0 {
-				// TODO(jlw) exponential backoff
+			// Start deleting. If any UnprocessedItems come back then try again. Do
+			// not retry immediately
+			for i := 0; len(input.RequestItems) > 0; i++ {
+				if i > 0 {
+					time.Sleep(retryInterval(i))
+				}
+				if i > 25 {
+					return errors.New("took more than 25 tries to delete a batch")
+				}
 
 				output, err := d.client.BatchWriteItem(input)
 				if err != nil {
-					return err
+					return errors.Wrap(err, "calling BatchWriteItem")
 				}
 				input.RequestItems = output.UnprocessedItems
 			}
@@ -346,7 +352,7 @@ func (d *Storage) List(start int, limit int) (*data.Messages, error) {
 
 				var m message
 				if err := dynamodbattribute.UnmarshalMap(item, &m); err != nil {
-					err = pageErr
+					pageErr = errors.Wrap(err, "unmarshalling item")
 					return false
 				}
 				s = append(s, *m.Msg)
@@ -358,10 +364,10 @@ func (d *Storage) List(start int, limit int) (*data.Messages, error) {
 		}
 
 		if err := d.client.QueryPages(input, fn); err != nil {
-			return nil, err // TODO(jlw) retry
+			return nil, errors.Wrap(err, "calling QueryPages")
 		}
 		if pageErr != nil {
-			return nil, pageErr // TODO(jlw) retry
+			return nil, pageErr
 		}
 	}
 

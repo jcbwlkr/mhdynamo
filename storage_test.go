@@ -46,6 +46,7 @@ func CRUD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	msg.ID = data.MessageID(id)
 
 	if count := d.Count(); count != 1 {
 		t.Errorf("After storing one item the table has %d items, expected 1", count)
@@ -173,7 +174,7 @@ func makeListMessages(t *testing.T, start, size int) data.Messages {
 func setup(t *testing.T, table string) (d *Storage, teardown func()) {
 	t.Helper()
 
-	table = "test" + table
+	table = "test" + table + strconv.Itoa(int(time.Now().Unix()))
 
 	sess, err := session.NewSession()
 	if err != nil {
