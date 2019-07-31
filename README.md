@@ -67,9 +67,75 @@ and can be decoded to find the appropriate partition key. This means an ID like
 `"1564364816345567660|msg1@localhost"` originally had the id `msg1@localhost`
 and was created at 1564364816345567660 so it is in the `"2019-07-29"` partition.
 
+## Eventual vs Strong Consistency
+
+DynamoDB is designed to use "eventually consistent" storage by default. You can
+enable Strongly Consistent reads if desired. I do this for tests but in
+production you may turn this setting off. It is configured with a boolean
+passed to NewStorage.
+
 ## Improvements and Limitations
 
-This backend must implement the mailhog Storage interface which does not
-provide `context.Context` for timeouts or cancellation which I would like. If
-MailHog were extended to provide those field then this package could be
-modified to respect those deadlines.
+1. This backend must implement the mailhog Storage interface which does not
+   provide `context.Context` for timeouts or cancellation which I would like.
+   If MailHog were extended to provide those field then this package could be
+   modified to respect those deadlines.
+2. The DeleteAll function could use concurrency to improve performance. I would
+   launch up to one goroutine per day in the TTL range to look up IDs then feed
+   those IDs to another pool of goroutines to do the batch deleting.
+3. The SDK implements exponential backoff and retry logic internally for most
+   scenarios. The scenario where it does not is unprocessed entities in a Batch
+   delete operation so I have implemented that retry logic myself. I believe
+   there may be scenarios I have missed where additional retry logic is needed.
+   In general I am treating most errors the same and this is an area I would
+   like to improve on this.
+
+There are other comments or concerns noted in the code itself, mostly
+`storage.go`. As you review this code please check for any comments with the
+prefix `NOTE:`.
+
+## Integration
+
+To integrate this into MailHog apply this patch to `MailHog-Server` but provide
+configuration parameters for the table name `"mailhog"`, the ttl `7` and the
+setting for strong consistency `false`.
+
+```
+diff --git a/config/config.go b/config/config.go
+index 5d37dd5..6fa38bc 100644
+--- a/config/config.go
++++ b/config/config.go
+@@ -7,7 +7,10 @@ import (
+ 	"log"
+ 
+ 	"github.com/ZipRecruiter/MailHog-Server/monkey"
++	"github.com/aws/aws-sdk-go/aws/session"
++	"github.com/aws/aws-sdk-go/service/dynamodb"
+ 	"github.com/ian-kent/envconf"
++	"github.com/jcbwlkr/mhdynamo"
+ 	"github.com/mailhog/data"
+ 	"github.com/mailhog/storage"
+ )
+@@ -71,6 +74,21 @@ var Jim = &monkey.Jim{}
+ // Configure configures stuff
+ func Configure() *Config {
+ 	switch cfg.StorageType {
++	case "dynamodb":
++		log.Println("Using dynamodb message storage")
++
++		sess, err := session.NewSession()
++		if err != nil {
++			log.Fatal("Could not create aws session: ", err)
++		}
++		db := dynamodb.New(sess)
++
++		s, err := mhdynamo.NewStorage(db, "mailhog", false, 7)
++		if err != nil {
++			log.Fatal("Could not create dynamo storage: ", err)
++		}
++
++		cfg.Storage = s
+ 	case "memory":
+ 		log.Println("Using in-memory storage")
+ 		cfg.Storage = storage.CreateInMemory()
+```

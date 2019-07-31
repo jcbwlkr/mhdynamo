@@ -1,8 +1,5 @@
 package mhdynamo
 
-// TODO(jlw) get rid of so much nesting
-// TODO(jlw) Implement backoff and retry
-
 import (
 	"log" // NOTE: do not use the global logger.
 	"strings"
@@ -179,7 +176,7 @@ func (s *Storage) DeleteAll() error {
 		// Querying a table may require multiple calls. The sdk handles this for us
 		// by calling this function once per page.
 		var pageErr error
-		fn := func(page *dynamodb.QueryOutput, hasNext bool) bool {
+		pager := func(page *dynamodb.QueryOutput, hasNext bool) bool {
 			for _, item := range page.Items {
 				var m message
 				if err := dynamodbattribute.UnmarshalMap(item, &m); err != nil {
@@ -191,7 +188,7 @@ func (s *Storage) DeleteAll() error {
 			return true
 		}
 
-		if err := s.client.QueryPages(input, fn); err != nil {
+		if err := s.client.QueryPages(input, pager); err != nil {
 			return errors.Wrap(err, "calling QueryPages")
 		}
 		if pageErr != nil {
@@ -225,18 +222,19 @@ func (s *Storage) DeleteAll() error {
 			// Start deleting. If any UnprocessedItems come back then try again. Do
 			// not retry immediately
 			for i := 0; len(input.RequestItems) > 0; i++ {
-				if i > 0 {
-					time.Sleep(retryInterval(i))
-				}
-				if i > 25 {
-					return errors.New("took more than 25 tries to delete a batch")
-				}
-
 				output, err := s.client.BatchWriteItem(input)
 				if err != nil {
 					return errors.Wrap(err, "calling BatchWriteItem")
 				}
+				// Replace RequestItems with any items that were unable to process.
 				input.RequestItems = output.UnprocessedItems
+
+				if i > 25 {
+					return errors.New("took more than 25 tries to delete a batch")
+				}
+				if i > 0 {
+					time.Sleep(retryInterval(i))
+				}
 			}
 		}
 	}
@@ -258,10 +256,11 @@ func (s *Storage) Count() int {
 	}
 
 	var count int64
-	err := s.client.ScanPages(input, func(scan *dynamodb.ScanOutput, hasNext bool) bool {
+	pager := func(scan *dynamodb.ScanOutput, hasNext bool) bool {
 		count += *scan.Count
 		return true
-	})
+	}
+	err := s.client.ScanPages(input, pager)
 
 	// NOTE: The interface and existing implementations ignore the error on the
 	// Count step. This is a bad idea. If we can't count should we panic? Log it?
@@ -340,7 +339,7 @@ func (s *Storage) List(start int, limit int) (*data.Messages, error) {
 
 		// Querying a table may require multiple calls. The SDK handles this for us
 		// by calling this function once per page.
-		fn := func(page *dynamodb.QueryOutput, hasNext bool) bool {
+		pager := func(page *dynamodb.QueryOutput, hasNext bool) bool {
 			for _, item := range page.Items {
 				if skipped < start {
 					skipped++
@@ -365,7 +364,7 @@ func (s *Storage) List(start int, limit int) (*data.Messages, error) {
 			return true
 		}
 
-		if err := s.client.QueryPages(input, fn); err != nil {
+		if err := s.client.QueryPages(input, pager); err != nil {
 			return nil, errors.Wrap(err, "calling QueryPages")
 		}
 		if pageErr != nil {
